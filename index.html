@@ -183,9 +183,33 @@ a{color:var(--accent-dk);}
 .stage .voice-card{font-size:1.4rem;}
 .stage .all-result-row{font-size:1.7rem; padding:.9rem 0;}
 .stage .stage-empty{font-size:1.4rem;}
+
+/* ---------- 리모컨·키보드, 발표자 노트 ---------- */
+.rs-ov{position:fixed; inset:0; z-index:50; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.62);}
+.rs-ov.show{display:flex;}
+.rs-ovbox{background:var(--paper-raised); color:var(--ink); border:1.5px solid var(--accent); border-radius:16px; padding:1.5rem 1.7rem; max-width:min(92vw,34rem);}
+.rs-ovbox h3{margin:0 0 .6rem; color:var(--accent-dk);}
+.rs-ovbox dl{display:grid; grid-template-columns:auto 1fr; gap:.4rem 1.2rem; margin:.4rem 0 .8rem;}
+.rs-ovbox dt{font-weight:700; color:var(--accent-dk); white-space:nowrap;}
+.rs-ovbox dd{margin:0;}
+.rs-toast{position:fixed; bottom:1.4rem; left:50%; transform:translateX(-50%); background:#1C1C1C; color:#F4F4F2; border:1px solid var(--accent); padding:.55rem 1.1rem; border-radius:999px; z-index:60; opacity:0; pointer-events:none; transition:opacity .25s; font-weight:700;}
+.rs-toast.on{opacity:1;}
+.notebox{background:var(--accent-soft); border-left:5px solid var(--accent); border-radius:10px; padding:.7rem .9rem;}
+.notebox .nh{display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.3rem;}
+.notebox .ntext{white-space:pre-wrap; margin:.3rem 0; line-height:1.55;}
+.notebox .nnext{font-size:.85rem; color:var(--accent-dk); margin:.2rem 0 .5rem;}
+.notebox textarea{width:100%; min-height:5.5rem; font-family:inherit; font-size:.95rem; padding:.5rem; border:1.5px solid var(--line); border-radius:8px; background:var(--paper-raised); color:var(--ink);}
+.stepbar{display:flex; gap:.5rem; margin-top:.4rem;}
+.stepbar .btn{flex:1; padding:.7rem .5rem;}
 </style>
 
 <div id="app"></div>
+<div id="remotePin" class="rs-ov"><div class="rs-ovbox"><h3>리모컨·키보드 조작</h3><p class="muted small" style="margin:0 0 .7rem">교사 PIN을 한 번 입력하면 이 화면에서 → ← 키와 무선 프레젠터(리모컨)로 진행할 수 있어요.</p><input id="remotePinInput" type="password" inputmode="numeric" class="input input-lg mono" maxlength="8" placeholder="PIN"><div class="form-error" id="remotePinErr"></div><div class="row-actions" style="margin-top:.6rem"><button class="btn btn-primary btn-sm" onclick="submitRemotePin()">확인</button><button class="btn btn-ghost btn-sm" onclick="closeOverlays()">닫기</button></div></div></div>
+<div id="keyHelp" class="rs-ov" onclick="closeOverlays()"><div class="rs-ovbox"><h3>키보드·리모컨 안내</h3><dl>
+<dt>→ · PageDown · Space</dt><dd>다음 <span class="muted small">(발표 → 피드백 → 결과 공개 → 다음 모둠 … → 전체 결과 → 성찰)</span></dd>
+<dt>← · PageUp</dt><dd>이전</dd><dt>Home · End</dt><dd>처음(첫 모둠 발표) · 마지막(성찰)</dd><dt>F</dt><dd>전체화면</dd><dt>?</dt><dd>이 안내 열기·닫기</dd></dl>
+<p class="muted small" style="margin:0">처음 조작할 때 교사 PIN을 한 번 확인해요 · 아무 곳이나 누르면 닫혀요</p></div></div>
+<div id="rsToast" class="rs-toast"></div>
 
 <script>
 var STRENGTHS = <?!= JSON.stringify(STRENGTHS) ?>;
@@ -300,7 +324,9 @@ function pollSnapshot() {
   google.script.run.withSuccessHandler(onSnapshot).withFailureHandler(function(e){ console.error(e); }).getSnapshot(CLASS_ID);
 }
 function onSnapshot(snap) {
-  state = snap.state; feedbackDocs = snap.feedback; reflectionDocs = snap.reflections;
+  state = snap.state;
+  if (holdPatch && Date.now() < holdPatch.until && state) { Object.keys(holdPatch.patch).forEach(function (k) { state[k] = holdPatch.patch[k]; }); } // 방금 바꾼 단계 유지
+  feedbackDocs = snap.feedback; reflectionDocs = snap.reflections;
   spreadsheetUrl = snap.spreadsheetUrl; webAppUrl = snap.webAppUrl; classList = snap.classes || classList;
   var active = document.activeElement;
   if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
@@ -634,7 +660,7 @@ function setPinError(msg) { var el = document.getElementById('pinError'); if (el
 window.submitTeacherPin = function () {
   var val = (drafts.pin || '').trim();
   google.script.run.withSuccessHandler(function(res){
-    if (res.ok) { teacherAuthed = true; sessionStorage.setItem('rs_teacher_ok__' + CLASS_ID, '1'); drafts.pin = ''; pollSnapshot(); }
+    if (res.ok) { teacherAuthed = true; sessionStorage.setItem('rs_teacher_ok__' + CLASS_ID, '1'); savePin(val); drafts.pin = ''; pollSnapshot(); }
     else setPinError(res.message || 'PIN이 올바르지 않아요.');
   }).withFailureHandler(function(){ setPinError('오류가 발생했어요.'); }).teacherLogin(CLASS_ID, val);
 };
@@ -668,7 +694,7 @@ function linkFor(params) {
 function teacherControlRail() {
   var stageParams = {view: 'stage'}; if (CLASS_ID !== 'default') stageParams['class'] = CLASS_ID;
   var stageLink = webAppUrl ? '<a class="link-sm" href="' + esc(linkFor(stageParams)) + '" target="_blank" rel="noopener">프로젝터 전용 화면 새 창에서 열기 →</a>' : '';
-  return '<div class="panel">' + phaseSwitcher() + '</div>' +
+  return '<div class="panel">' + phaseSwitcher() + '</div>' + '<div class="panel">' + noteBoxHtml() + '</div>' +
     '<p class="muted small" style="margin:.5rem 0 0">전자칠판/프로젝터는 이 창을 복제하지 말고, 화면 확장 후 아래 링크로 연 창을 그쪽으로 옮겨서 쓰세요.</p>' +
     '<p style="margin:.3rem 0 0">' + stageLink + '</p>' +
     phaseControls() + classSwitchPanel() + teamManagementPanel() + commentReviewPanel() + feedbackLogPanel() +
@@ -841,7 +867,7 @@ window.changePin = function () {
 };
 
 function screenStageOnly() {
-  var fsBtn = '<button class="btn btn-ghost btn-sm stage-fs-btn" onclick="toggleFullscreen()">전체 화면 전환</button>';
+  var fsBtn = '<button class="btn btn-ghost btn-sm stage-fs-btn" onclick="toggleFullscreen()">전체 화면 전환</button><button class="btn btn-ghost btn-sm stage-fs-btn" style="right:auto;left:1rem" onclick="toggleKeyHelp()">? 키 안내</button>';
   if (!state) return '<div class="stage-only-wrap">' + fsBtn + '<section class="stage stage-full"><div class="stage-inner"><p class="muted">불러오는 중...</p></div></section></div>';
   return '<div class="stage-only-wrap">' + fsBtn + '<section class="stage stage-full">' + teacherStage() + '</section></div>';
 }
@@ -899,6 +925,144 @@ function teacherStage() {
   }
   return '<div class="stage-inner">' + body + '</div>';
 }
+
+
+/* ---------- 진행 순서 · 리모컨(키보드) 진행 · 발표자 노트 ---------- */
+/* 진행 순서: 모둠마다 발표 → 피드백 → 결과 공개, 마지막에 전체 결과 → 성찰 */
+function stepSequence() {
+  var seq = [];
+  state.teams.forEach(function (t) { TEAM_PHASES.forEach(function (p) { seq.push({team: t.id, phase: p}); }); });
+  seq.push({phase: 'ALL_RESULT'}, {phase: 'REFLECTION'});
+  return seq;
+}
+function seqIndex(seq) {
+  for (var i = 0; i < seq.length; i++) {
+    var s = seq[i];
+    if (s.team) { if (s.team === state.currentTeamId && s.phase === state.phase) return i; }
+    else if (s.phase === state.phase) return i;
+  }
+  return -1;
+}
+function seqLabel(s) { return s.team ? teamName(s.team) + ' ' + PHASE_LABELS[s.phase] : PHASE_LABELS[s.phase]; }
+var holdPatch = null; // 방금 바꾼 단계를, 서버에 저장되기 전에 도착하는 옛 조회 결과가 되돌리지 않게 잠시 유지
+var stepInFlight = false, stepPending = null; // 서버 요청은 한 번에 하나만: 그 사이 더 누른 것은 최신 값만 이어서 보낸다(응답이 뒤바뀌어 되돌아가는 것 방지)
+function sendStep(patch) {
+  if (stepInFlight) { stepPending = patch; return; }
+  stepInFlight = true;
+  google.script.run.withSuccessHandler(function (s) {
+    stepInFlight = false;
+    if (stepPending) { var p = stepPending; stepPending = null; sendStep(p); return; }
+    state = s; render();
+  }).withFailureHandler(function (e) {
+    stepInFlight = false; stepPending = null; holdPatch = null; alertErr(e); pollSnapshot();
+  }).updateState(CLASS_ID, patch);
+}
+function applyStep(target) {
+  var patch = target.team ? {currentTeamId: target.team, phase: target.phase} : {phase: target.phase};
+  Object.keys(patch).forEach(function (k) { state[k] = patch[k]; });
+  var merged = {}; if (holdPatch && Date.now() < holdPatch.until) Object.keys(holdPatch.patch).forEach(function (k) { merged[k] = holdPatch.patch[k]; });
+  Object.keys(patch).forEach(function (k) { merged[k] = patch[k]; });
+  holdPatch = {patch: merged, until: Date.now() + 4500};
+  render(); // 서버 응답을 기다리지 않고 바로 화면에 반영
+  sendStep(patch);
+}
+window.stepKey = function (d) {
+  var seq = stepSequence(), i = seqIndex(seq);
+  if (i < 0) i = d > 0 ? -1 : seq.length;
+  var t = seq[i + d];
+  if (!t) { rsToast(d > 0 ? '마지막이에요' : '처음이에요'); return; }
+  applyStep(t);
+  rsToast(seqLabel(t) + '  (' + (i + d + 1) + '/' + seq.length + ')');
+};
+function jumpEnd(last) { var seq = stepSequence(), t = last ? seq[seq.length - 1] : seq[0]; applyStep(t); rsToast(seqLabel(t)); }
+var rsToastTimer = null;
+function rsToast(msg) {
+  var el = document.getElementById('rsToast'); if (!el) return;
+  el.textContent = msg; el.classList.add('on');
+  clearTimeout(rsToastTimer); rsToastTimer = setTimeout(function () { el.classList.remove('on'); }, 1800);
+}
+function getPin() { try { return sessionStorage.getItem('rs_teacher_pin__' + CLASS_ID) || ''; } catch (e) { return ''; } }
+function savePin(v) { try { sessionStorage.setItem('rs_teacher_pin__' + CLASS_ID, v); } catch (e) {} }
+function toggleOverlay(id, on) { var el = document.getElementById(id); if (!el) return; if (on === undefined) on = !el.classList.contains('show'); el.classList.toggle('show', on); }
+window.closeOverlays = function () { toggleOverlay('remotePin', false); toggleOverlay('keyHelp', false); var pi = document.getElementById('remotePinInput'); if (pi) pi.blur(); }; // 창을 닫을 때 입력칸 포커스를 풀어야 이어서 키 조작이 됨
+window.toggleKeyHelp = function () { toggleOverlay('keyHelp'); };
+window.askRemotePin = function () {
+  toggleOverlay('remotePin', true);
+  var input = document.getElementById('remotePinInput'); if (input) { input.value = ''; input.focus(); }
+  var err = document.getElementById('remotePinErr'); if (err) err.textContent = '';
+};
+window.submitRemotePin = function () {
+  var input = document.getElementById('remotePinInput'), err = document.getElementById('remotePinErr');
+  var val = ((input && input.value) || '').trim();
+  google.script.run.withSuccessHandler(function (res) {
+    if (res.ok) { teacherAuthed = true; try { sessionStorage.setItem('rs_teacher_ok__' + CLASS_ID, '1'); } catch (e) {} savePin(val); closeOverlays(); rsToast('리모컨 조작을 켰어요 — → 다음 · ← 이전'); }
+    else if (err) err.textContent = res.message || 'PIN이 올바르지 않아요.';
+  }).withFailureHandler(function () { if (err) err.textContent = '오류가 발생했어요.'; }).teacherLogin(CLASS_ID, val);
+};
+/* 프로젝터 전용 화면(?view=stage)에서만: → PageDown Space 다음 · ← PageUp 이전 · Home/End 처음/끝 · F 전체화면 · ? 안내.
+   이 화면은 PIN 없이 열리므로, 처음 조작 키를 누르면 교사 PIN을 한 번 확인한다. */
+document.addEventListener('keydown', function (e) {
+  if (INITIAL_VIEW !== 'stage') return;
+  if (e.key === 'Escape') { closeOverlays(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  var a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return; // PIN을 입력하는 중에는 키 조작을 하지 않음
+  var k = e.key, nav = {ArrowRight: 1, PageDown: 1, ' ': 1, ArrowLeft: -1, PageUp: -1};
+  if (k === '?') { e.preventDefault(); toggleKeyHelp(); return; }
+  if (k === 'f' || k === 'F') { if (!document.fullscreenElement) toggleFullscreen(); return; }
+  if (!(k in nav) && k !== 'Home' && k !== 'End') return;
+  e.preventDefault();
+  if (e.repeat || !state) return;
+  if (!teacherAuthed) { askRemotePin(); return; }
+  if (k === 'Home') jumpEnd(false); else if (k === 'End') jumpEnd(true); else stepKey(nav[k]);
+});
+document.addEventListener('keydown', function (e) { if (e.key === 'Enter' && document.activeElement && document.activeElement.id === 'remotePinInput') submitRemotePin(); });
+
+/* 발표자 노트: 단계(발표·피드백·결과 공개·전체 결과·성찰)별 메모. 교사 화면에만 보이고 서버에는 교사 PIN으로만 저장·조회한다.
+   적어 둔 것이 없으면 아래 기본 안내를 보여 준다(수정하면 서버에 저장된 내용이 우선). */
+var DEFAULT_NOTES = {
+  PRESENTATION: '발표 팀이 자료를 소개해요. 발표 시간은 2분 안팎으로 안내하고, 듣는 학생은 강점과 개선점을 생각하며 들어요. 발표가 끝나면 ‘피드백’으로 넘겨요.',
+  FEEDBACK: '학생들이 강점·개선점을 고르고 한 줄 의견을 보내요. 참여 인원이 충분해지면 ‘결과 공개’로 넘겨요. 부적절한 의견은 승인하지 않아도 돼요.',
+  RESULT: '실시간 집계를 함께 보며 어떤 점이 잘 전달됐는지 이야기해요. 발표 팀에게 소감을 물어도 좋아요. 끝나면 다음 모둠으로 넘겨요.',
+  ALL_RESULT: '모든 모둠의 가장 큰 강점을 함께 보며 오늘 발표를 돌아봐요.',
+  REFLECTION: '각 팀이 친구들의 피드백을 보고 우리 탐구를 다시 살펴 성찰을 제출해요. 제출 현황을 확인해요.'
+};
+var NOTES = null, NOTES_LOADING = false, NOTE_EDIT = false;
+function noteOf(p) { return (NOTES && NOTES[p] !== undefined) ? String(NOTES[p]) : (DEFAULT_NOTES[p] || ''); }
+function loadNotes() {
+  NOTES_LOADING = true;
+  google.script.run.withSuccessHandler(function (res) { NOTES = (res && res.ok) ? (res.notes || {}) : {}; NOTES_LOADING = false; render(); })
+    .withFailureHandler(function () { NOTES = {}; NOTES_LOADING = false; }).getNotes(CLASS_ID, getPin());
+}
+function noteBoxHtml() {
+  if (NOTES === null && !NOTES_LOADING) loadNotes();
+  var p = state.phase, seq = stepSequence(), i = seqIndex(seq), nx = i >= 0 ? (i < seq.length - 1 ? seq[i + 1] : null) : seq[0]; // 아직 시작 전이면 다음은 첫 모둠 발표
+  var title = (TEAM_PHASES.indexOf(p) >= 0 && state.currentTeamId ? esc(teamName(state.currentTeamId)) + ' · ' : '') + esc(PHASE_LABELS[p] || p);
+  var nav = '<div class="stepbar"><button class="btn btn-ghost" onclick="stepKey(-1)">◀ 이전</button><button class="btn btn-primary" onclick="stepKey(1)">다음 ▶</button></div>';
+  if (NOTE_EDIT) {
+    return '<div class="notebox"><div class="nh"><b>📝 「' + title + '」 노트 수정</b></div>' +
+      '<textarea maxlength="600" placeholder="이 단계에서 할 말·확인할 것을 적어 두세요(선생님 화면에만 보여요)" oninput="drafts.noteText=this.value">' + esc(drafts.noteText != null ? drafts.noteText : noteOf(p)) + '</textarea>' +
+      '<div class="row-actions"><button class="btn btn-primary btn-sm" onclick="saveNote()">저장</button><button class="btn btn-ghost btn-sm" onclick="cancelNote()">취소</button></div>' +
+      '<p class="muted small" style="margin:.4rem 0 0">학생 화면과 프로젝터에는 보이지 않아요</p></div>';
+  }
+  var t = noteOf(p);
+  return '<div class="notebox"><div class="nh"><b>📝 발표자 노트 · ' + title + '</b><button class="btn btn-ghost btn-sm" onclick="editNote()">수정</button></div>' +
+    '<div class="ntext">' + (t ? esc(t) : '<span class="muted small">(노트 없음 — 수정을 눌러 적어 두세요)</span>') + '</div>' +
+    '<div class="nnext">' + (nx ? '다음 ▶ ' + esc(seqLabel(nx)) : '마지막 단계예요') + '</div>' + nav + '</div>';
+}
+window.editNote = function () { NOTE_EDIT = true; drafts.noteText = noteOf(state.phase); render(); };
+window.cancelNote = function () { NOTE_EDIT = false; drafts.noteText = null; render(); };
+window.saveNote = function () {
+  var p = state.phase, next = {}, k;
+  for (k in (NOTES || {})) next[k] = NOTES[k];
+  next[p] = drafts.noteText != null ? drafts.noteText : noteOf(p);
+  var pin = getPin() || (prompt('저장하려면 교사 PIN을 한 번 입력해 주세요') || '').trim();
+  if (!pin) return;
+  google.script.run.withSuccessHandler(function (res) {
+    if (res && res.ok) { savePin(pin); NOTES = next; NOTE_EDIT = false; drafts.noteText = null; render(); rsToast('노트를 저장했어요'); }
+    else alert((res && res.message) || '저장하지 못했어요.');
+  }).withFailureHandler(alertErr).setNotes(CLASS_ID, pin, next);
+};
 
 /* ---------- 시작 ---------- */
 pollSnapshot();

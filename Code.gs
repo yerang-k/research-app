@@ -193,8 +193,10 @@ function getSnapshot(classId) {
     };
     try { cache.put(key, JSON.stringify(rows), 4); } catch (e) {} // 100KB 넘으면 캐시 없이 그대로 동작
   }
+  var safeState = JSON.parse(JSON.stringify(state));
+  delete safeState.pin; // 학생에게도 가는 조회라 교사 PIN은 내려보내지 않는다
   return {
-    state: state,
+    state: safeState,
     feedback: rows.feedback,
     reflections: rows.reflections,
     spreadsheetUrl: SpreadsheetApp.getActiveSpreadsheet().getUrl(),
@@ -274,6 +276,35 @@ function changePin(classId, newPin) {
   var v = String(newPin || '').trim();
   if (!v) throw new Error('새 PIN을 입력해주세요.');
   return updateState(classId, {pin: v});
+}
+
+/* ---------- 발표자 노트(교사 화면에서만 보이는 단계별 메모) ---------- */
+var NOTE_PHASES_ = ['PRESENTATION', 'FEEDBACK', 'RESULT', 'ALL_RESULT', 'REFLECTION'];
+function notesKey_(classId) { return 'RESEARCH_NOTES__' + classId; }
+function pinOk_(classId, pin) {
+  var s = getState_(classId) || (classId === 'default' ? getLegacyState_() : null);
+  return !!s && String(pin) === String(s.pin);
+}
+function getNotes(classId, pin) {
+  classId = normalizeClassId_(classId);
+  if (!pinOk_(classId, pin)) return {ok: false, message: 'PIN이 올바르지 않아요.'};
+  var raw = PropertiesService.getScriptProperties().getProperty(notesKey_(classId)), notes = {};
+  try { notes = raw ? JSON.parse(raw) : {}; } catch (e) { notes = {}; }
+  return {ok: true, notes: notes};
+}
+function setNotes(classId, pin, notes) {
+  classId = normalizeClassId_(classId);
+  if (!pinOk_(classId, pin)) return {ok: false, message: 'PIN이 올바르지 않아요.'};
+  var out = {}, total = 0;
+  NOTE_PHASES_.forEach(function (p) {
+    if (notes && notes[p] !== undefined) { var v = String(notes[p] == null ? '' : notes[p]).slice(0, 600); out[p] = v; total += v.length; }
+  });
+  if (total > 2400) return {ok: false, message: '노트가 너무 길어요.'}; // 스크립트 속성 한 칸 한도(약 9KB) 안쪽
+  var lock = sheetLock_();
+  lock.waitLock(10000);
+  try { PropertiesService.getScriptProperties().setProperty(notesKey_(classId), JSON.stringify(out)); }
+  finally { lock.releaseLock(); }
+  return {ok: true};
 }
 
 function setTeamSlideUrl(classId, payload) {
