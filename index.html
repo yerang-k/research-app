@@ -755,9 +755,8 @@ function phaseSwitcher() {
     '<p class="muted small" style="margin-top:.6rem">팀과 단계를 순서와 상관없이 자유롭게 오갈 수 있어요.</p>';
 }
 window.pickCurrentTeam = function (id) {
-  var patch = {currentTeamId: id};
-  if (state.phase === 'ALL_RESULT' || state.phase === 'REFLECTION') patch.phase = 'PRESENTATION';
-  google.script.run.withSuccessHandler(onStateUpdated).withFailureHandler(alertErr).updateState(CLASS_ID, patch);
+  if (id === state.currentTeamId) return;
+  applyStep({team: id, phase: 'PRESENTATION'}); // 발표팀을 바꾸면 어느 단계에 있었든 새 팀의 '발표'부터 시작(리모컨 진행과 같은 경로라 화면에 바로 반영됨)
 };
 window.setPhase = function (p) { google.script.run.withSuccessHandler(onStateUpdated).withFailureHandler(alertErr).updateState(CLASS_ID, {phase: p}); };
 function phaseControls() {
